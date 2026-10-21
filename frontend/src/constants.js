@@ -29,6 +29,7 @@ export const VIEW_MODES = [
   { value: "windrose", label: "Роза ветров" },
   { value: "missing", label: "Пропуски" },
   { value: "blocks", label: "Длинные блоки" },
+  { value: "limits", label: "Физические ограничения" },
   { value: "outliers", label: "Выбросы" },
   { value: "table", label: "Таблица / правки" },
 ];

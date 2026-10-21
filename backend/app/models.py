@@ -34,6 +34,7 @@ class Edits(BaseModel):
     renames: dict[str, str] = Field(default_factory=dict)   # original -> new
     drop_columns: list[str] = Field(default_factory=list)
     drop_rows: list[int] = Field(default_factory=list)
+    drop_time: list[list] = Field(default_factory=list)     # [[start_iso, end_iso], ...] rows
     deletions: list[Deletion] = Field(default_factory=list)
     interpolate: InterpConfig = Field(default_factory=InterpConfig)
     normalize: list[str] = Field(default_factory=list)      # cols ÷ their max
@@ -125,6 +126,24 @@ class BlocksRequest(ParseConfig):
     y_cols: list[str] = Field(default_factory=list)   # empty => all columns
     min_length: int = 24
     kinds: list[str] = Field(default_factory=lambda: ["nan", "zeros"])
+
+
+class LimitsRequest(ParseConfig):
+    """Physically-allowed ranges per parameter — find runs outside [min, max]."""
+    x_col: str | None = None
+    limits: dict[str, dict] = Field(default_factory=dict)  # col -> {min, max}
+    min_length: int = 1
+
+
+class ContextRequest(ParseConfig):
+    """One parameter around a period [start_idx, end_idx], padded on each side
+    by a number of points or a time span (hour/day/month/year)."""
+    x_col: str | None = None
+    param: str = ""
+    start_idx: int = 0
+    end_idx: int = 0
+    left: dict = Field(default_factory=lambda: {"n": 0, "unit": "points"})
+    right: dict = Field(default_factory=lambda: {"n": 0, "unit": "points"})
 
 
 class SpectrumRequest(ParseConfig):

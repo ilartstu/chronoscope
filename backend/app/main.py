@@ -14,9 +14,9 @@ from fastapi.responses import StreamingResponse
 
 from . import analysis, parsing, storage
 from .models import (
-    BlocksRequest, CombineRequest, CorrelationRequest, ExportRequest,
-    InspectRequest, MissingRequest, OutliersRequest, RowsRequest, SeriesRequest,
-    SpectrumRequest, StatsRequest,
+    BlocksRequest, CombineRequest, ContextRequest, CorrelationRequest,
+    ExportRequest, InspectRequest, LimitsRequest, MissingRequest, OutliersRequest,
+    RowsRequest, SeriesRequest, SpectrumRequest, StatsRequest,
 )
 
 app = FastAPI(title="Figures — Time Series Explorer", version="0.1.0")
@@ -439,6 +439,128 @@ def _block_row(col, a, b, kind, n_zeros, n_nan, x_list):
 
 
 # --------------------------------------------------------------------------- #
+# Physical limits — runs where a parameter is outside its allowed [min, max]
+# --------------------------------------------------------------------------- #
+@app.post("/api/limits")
+def limits(req: LimitsRequest) -> dict:
+    df = _read(req)
+    x_col = req.x_col or (str(df.columns[0]) if len(df.columns) else None)
+    x_raw, x_is_time = _build_x(df, x_col)
+    x_list = _format_x(x_raw, x_is_time)
+    min_len = max(1, int(req.min_length))
+
+    def _bound(v):
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for col, lim in (req.limits or {}).items():
+        if col not in df.columns or not isinstance(lim, dict):
+            continue
+        lo, hi = _bound(lim.get("min")), _bound(lim.get("max"))
+        if lo is None and hi is None:
+            continue
+        y = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(y)
+        below = (finite & (y < lo)) if lo is not None else np.zeros_like(finite)
+        above = (finite & (y > hi)) if hi is not None else np.zeros_like(finite)
+        mask = below | above
+        for a, b in analysis.runs_of(mask):
+            if b - a + 1 < min_len:
+                continue
+            seg = y[a:b + 1]
+            out.append({
+                "parameter": col, "start_idx": int(a), "end_idx": int(b),
+                "start": x_list[a], "end": x_list[b], "length": int(b - a + 1),
+                "n_below": int(np.sum(below[a:b + 1])),
+                "n_above": int(np.sum(above[a:b + 1])),
+                "min_val": _num(np.nanmin(seg)) if np.isfinite(seg).any() else None,
+                "max_val": _num(np.nanmax(seg)) if np.isfinite(seg).any() else None,
+            })
+
+    out.sort(key=lambda r: (r["start_idx"], r["parameter"]))
+    return {"total_rows": int(len(df)), "x_is_time": x_is_time,
+            "x_col": x_col, "blocks": out}
+
+
+# --------------------------------------------------------------------------- #
+# Context — one parameter around a period, padded left/right (for inspection)
+# --------------------------------------------------------------------------- #
+def _time_offset(n: float, unit: str):
+    if unit == "hour":
+        return pd.Timedelta(hours=n)
+    if unit == "day":
+        return pd.Timedelta(days=n)
+    if unit == "month":
+        return pd.DateOffset(months=int(round(n)))
+    if unit == "year":
+        return pd.DateOffset(years=int(round(n)))
+    return pd.Timedelta(0)
+
+
+def _pad_index(xi_dt, x_is_time, idx, pad, side, n_rows):
+    try:
+        n = float((pad or {}).get("n", 0) or 0)
+    except (TypeError, ValueError):
+        n = 0.0
+    unit = ((pad or {}).get("unit") or "points").lower()
+    if n <= 0:
+        return idx
+    if unit == "points" or not x_is_time or xi_dt is None:
+        step = int(round(n))
+        return idx - step if side == "left" else idx + step
+    if not (0 <= idx < len(xi_dt)) or pd.isna(xi_dt.iloc[idx]):
+        return idx
+    t0 = xi_dt.iloc[idx]
+    target = (t0 - _time_offset(n, unit)) if side == "left" else (t0 + _time_offset(n, unit))
+    if side == "left":
+        ge = (xi_dt >= target).to_numpy()
+        return int(ge.argmax()) if ge.any() else 0
+    le = (xi_dt <= target).to_numpy()
+    return int(np.where(le)[0][-1]) if le.any() else n_rows - 1
+
+
+@app.post("/api/context")
+def context(req: ContextRequest) -> dict:
+    df = _read(req)
+    x_col = req.x_col or (str(df.columns[0]) if len(df.columns) else None)
+    x_raw, x_is_time = _build_x(df, x_col)
+    n_rows = len(df)
+    if n_rows == 0 or req.param not in df.columns:
+        raise HTTPException(400, "No data / unknown parameter")
+
+    xi_dt = pd.to_datetime(pd.Series(np.asarray(x_raw, dtype=object)),
+                           errors="coerce").reset_index(drop=True) if x_is_time else None
+    s = max(0, min(n_rows - 1, int(req.start_idx)))
+    e = max(0, min(n_rows - 1, int(req.end_idx)))
+    if e < s:
+        s, e = e, s
+    lo = max(0, _pad_index(xi_dt, x_is_time, s, req.left, "left", n_rows))
+    hi = min(n_rows - 1, _pad_index(xi_dt, x_is_time, e, req.right, "right", n_rows))
+    if hi < lo:
+        lo, hi = hi, lo
+
+    x_full = _format_x(x_raw, x_is_time)
+    x_list = x_full[lo:hi + 1]
+    y = pd.to_numeric(df[req.param].iloc[lo:hi + 1], errors="coerce").to_numpy(dtype=float)
+    series = [{
+        "name": req.param, "y": [_num(v) for v in y], "x": None,
+        "nan_regions": [], "zero_regions": [], "anomalies": [],
+        "anomaly_count": 0, "anomaly_truncated": False,
+        "stats": analysis.column_stats(df[req.param].iloc[lo:hi + 1]),
+    }]
+    return {
+        "x": x_list, "x_is_time": x_is_time, "x_col": x_col, "n": len(x_list),
+        "series": series, "index0": int(lo),
+        "band": {"x0": x_full[s], "x1": x_full[e]},
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Outliers — list detected outlier points (for manual deletion)
 # --------------------------------------------------------------------------- #
 OUTLIER_CAP = 8000
@@ -623,8 +745,8 @@ def _read(req, drop_cols: bool = True, clean: bool = True, apply_row_drops: bool
     up = _get(req.id)
     df = _parse_cached(up, req.sheet, req.header_row, req.skip_after)
     e = getattr(req, "edits", None)
-    has_edits = e and (e.renames or e.drop_columns or e.drop_rows or e.deletions
-                       or (e.interpolate and e.interpolate.enabled) or e.normalize)
+    has_edits = e and (e.renames or e.drop_columns or e.drop_rows or getattr(e, "drop_time", None)
+                       or e.deletions or (e.interpolate and e.interpolate.enabled) or e.normalize)
     if not has_edits:
         return df
     df = df.copy()   # don't mutate the cached parse
@@ -636,6 +758,28 @@ def _read(req, drop_cols: bool = True, clean: bool = True, apply_row_drops: bool
         valid = [i for i in e.drop_rows if 0 <= i < len(df)]
         if valid:
             df = df.drop(index=valid).reset_index(drop=True)
+    # Remove whole rows whose time falls in a drop_time range (all parameters).
+    if getattr(e, "drop_time", None) and apply_row_drops:
+        xcol = getattr(req, "x_col", None)
+        if not xcol or xcol not in df.columns:
+            try:
+                xcol = _detect_time_col(df)
+            except Exception:  # noqa: BLE001
+                xcol = None
+        if xcol and xcol in df.columns:
+            xt = pd.to_datetime(df[xcol], errors="coerce", format="mixed")
+            mask = pd.Series(False, index=df.index)
+            for rng in e.drop_time:
+                if not rng or len(rng) < 2:
+                    continue
+                lo, hi = pd.to_datetime(rng[0], errors="coerce"), pd.to_datetime(rng[1], errors="coerce")
+                if pd.isna(lo) or pd.isna(hi):
+                    continue
+                if lo > hi:
+                    lo, hi = hi, lo
+                mask |= (xt >= lo) & (xt <= hi)
+            if mask.any():
+                df = df[~mask].reset_index(drop=True)
     if not clean:
         return df
     # Cell-level deletions (from blocks / outliers) → blank to NaN.

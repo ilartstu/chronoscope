@@ -383,5 +383,49 @@ export const DICT = {
   "Отмена": "Cancel",
   "⬇ Скачать": "⬇ Download",
 
+  // ---- AxisLabelBar.jsx ----
+  "Подписи осей и даты": "Axis labels & dates",
+  "Формат даты": "Date format",
+  "Разделитель": "Separator",
+  "✓ Применить": "✓ Apply",
+  "Применить подписи": "Apply labels",
+  "Сбросить к значениям по умолчанию": "Reset to defaults",
+
+  // ---- LimitsView.jsx (physical limits) ----
+  "Физические ограничения": "Physical limits",
+  "Допустимые диапазоны (мин / макс на параметр)": "Allowed ranges (min / max per parameter)",
+  "Мин.": "Min",
+  "Макс.": "Max",
+  "Найдено периодов: {n}": "Periods found: {n}",
+  "Ниже мин.": "Below min",
+  "Выше макс.": "Above max",
+  "min периода": "period min",
+  "max периода": "period max",
+  "Нарушений не найдено. Задайте границы для параметров выше.": "No violations found. Set bounds for the parameters above.",
+  "Периоды, где параметр выходит за заданные физические границы. «↩» — вернуть. Удаление очищает значения (→ NaN) в скачиваемом файле.": "Periods where a parameter goes outside its set physical bounds. “↩” restores. Deleting blanks the values (→ NaN) in the downloaded file.",
+
+  // ---- Period inspector (physical limits) ----
+  "Показать": "Show",
+  "Показать период на графике с контекстом": "Show the period on a chart with context",
+  "Показать период с контекстом": "Show period with context",
+  "слева": "left",
+  "справа": "right",
+  "точки": "points",
+  "часы": "hours",
+  "дни": "days",
+  "месяцы": "months",
+  "годы": "years",
+  "Укажите, сколько точек/времени добавить по краям периода — ниже откроется график с этим периодом и его окрестностями.": "Choose how many points / how much time to add on each side of the period — a chart of the period and its surroundings opens below.",
+  "Период с контекстом": "Period with context",
+  "Выделять период мышью для удаления (вместо зума)": "Select a period with the mouse to delete (instead of zoom)",
+  "🗑 Режим удаления": "🗑 Delete mode",
+  "Зажмите ЛКМ и проведите по графику, чтобы выделить период для удаления.": "Hold the left mouse button and drag across the chart to select a period to delete.",
+  "Выделено:": "Selected:",
+  "Удалить выделенное": "Delete selection",
+  "Удалить строки от": "Delete rows from",
+  "до": "to",
+  "Удалить строки": "Delete rows",
+  "Точной даты/времени нет в данных — взята ближайшая.": "No exact date/time in the data — the nearest one was used.",
+
   // __APPEND_BELOW__
 };

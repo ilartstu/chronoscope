@@ -15,11 +15,15 @@ import WindRoseView from "./components/WindRoseView";
 import MissingMapView from "./components/MissingMapView";
 import StatsTable from "./components/StatsTable";
 import BlocksView from "./components/BlocksView";
+import LimitsView from "./components/LimitsView";
+import PeriodShowDialog from "./components/PeriodShowDialog";
+import PeriodInspector from "./components/PeriodInspector";
 import OutliersView from "./components/OutliersView";
 import TableView from "./components/TableView";
 import ExportBar from "./components/ExportBar";
 import ExportDialog from "./components/ExportDialog";
 import WindowControls from "./components/WindowControls";
+import AxisLabelBar from "./components/AxisLabelBar";
 import Annotations from "./components/Annotations";
 import LangToggle from "./components/LangToggle";
 import { downloadChartImage } from "./lib/exportImage";
@@ -65,6 +69,9 @@ export default function App() {
     { enabled: false, unit: "days", count: 14, anchor: "end", date: "" });
   const [exportOpen, setExportOpen] = useState(false);   // image-export dialog
   const [exportCharts, setExportCharts] = useState([]);  // charts offered in it
+  // Custom axis titles (overrides) and time-axis date format.
+  const [axisLabels, setAxisLabels] = useState({ x: "", y: {} });
+  const [dateFmt, setDateFmt] = useState({ order: "dmy", sep: "/" });
 
   // View mode + per-mode state.
   const [viewMode, setViewMode] = useState("timeseries");
@@ -83,6 +90,18 @@ export default function App() {
   const [blocksParam, setBlocksParam] = useState("__any__");
   const [blocksData, setBlocksData] = useState(null);
   const [blocksBusy, setBlocksBusy] = useState(false);
+  // Physical limits: per-parameter {min,max} and detected out-of-range periods.
+  const [limits, setLimits] = useState({});           // col -> { min, max }
+  const [limitsMinLen, setLimitsMinLen] = useState(24);
+  const [limitsData, setLimitsData] = useState(null);
+  const [limitsBusy, setLimitsBusy] = useState(false);
+  // Period inspector (show a flagged period + context, then delete by sweeping).
+  const [showDlg, setShowDlg] = useState(false);
+  const [showPeriod, setShowPeriod] = useState(null);
+  const [pad, setPad] = useState({ left: { n: 1, unit: "day" }, right: { n: 1, unit: "day" } });
+  const [ctxData, setCtxData] = useState(null);
+  const [ctxBusy, setCtxBusy] = useState(false);
+  const [inspectOn, setInspectOn] = useState(false);
   const [deletions, setDeletions] = useState([]);   // [{column,start_idx,end_idx}]
 
   // Spectrum / missing-map / wind-rose.
@@ -101,6 +120,7 @@ export default function App() {
   const [dropColumns, setDropColumns] = useState([]);
   const [dropRows, setDropRows] = useState([]);
   const [renames, setRenames] = useState({});        // original -> new name
+  const [dropTime, setDropTime] = useState([]);      // [[start_iso, end_iso], ...] deleted rows
   const [normalize, setNormalize] = useState([]);    // cols ÷ their max
   const [normalizeMode, setNormalizeMode] = useState("self");  // self | common
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -145,6 +165,9 @@ export default function App() {
   const seriesReq = useRef(0);
   const corrReq = useRef(0);
   const blocksReq = useRef(0);
+  const limitsReq = useRef(0);
+  const limitsTimer = useRef(null);
+  const ctxReq = useRef(0);
   const spectrumReq = useRef(0);
   const missingReq = useRef(0);
   const outReq = useRef(0);
@@ -159,9 +182,13 @@ export default function App() {
   const enabledCols = orderedCols.filter(
     (k) => styles[k]?.enabled && k !== xCol && !dropColumns.includes(k));
   const yKey = enabledCols.join("|");
+  // Default axis titles for the rename bar (match the chart's auto titles).
+  const axisNumOf = (c) => { const a = styles[c]?.axis; return typeof a === "number" ? a : (a === "y2" ? 2 : 1); };
+  const tsYAxes = [...new Set(enabledCols.map(axisNumOf))].sort((a, b) => a - b)
+    .map((n) => ({ num: n, title: enabledCols.filter((c) => axisNumOf(c) === n).join(", ") }));
   // Working-copy edits payload sent with every request.
   const editsPayload = {
-    renames, drop_columns: dropColumns, drop_rows: dropRows,
+    renames, drop_columns: dropColumns, drop_rows: dropRows, drop_time: dropTime,
     deletions, interpolate: interp, normalize, normalize_mode: normalizeMode,
   };
   const editsKey = JSON.stringify(editsPayload);
@@ -225,8 +252,10 @@ export default function App() {
   const resetAnalysis = () => {
     setInspectData(null); setSeriesData(null); setStyles({}); setOrder([]);
     setXCol(null); setAnnotations([]); setDeletions([]); setBlocksData(null);
-    setDropColumns([]); setDropRows([]); setRenames({}); setTableData(null); setTablePage(0);
+    setDropColumns([]); setDropRows([]); setDropTime([]); setRenames({}); setTableData(null); setTablePage(0);
     setNormalize([]); setNormalizeMode("self"); setOutData(null); setTableSource("combined");
+    setAxisLabels({ x: "", y: {} }); setLimits({}); setLimitsData(null);
+    setInspectOn(false); setCtxData(null); setShowPeriod(null);
   };
 
   const labelFor = (filename) =>
@@ -468,6 +497,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, upload, sheet, headerRow, xCol, blocksParam, blocksMinLen, JSON.stringify(blocksKinds), editsKey]);
 
+  // -------- Physical-limits fetch (only in limits mode, debounced) --------
+  useEffect(() => {
+    if (viewMode !== "limits" || !upload || !inspectData) return;
+    clearTimeout(limitsTimer.current);
+    limitsTimer.current = setTimeout(async () => {
+      const reqId = ++limitsReq.current;
+      setLimitsBusy(true); setError(null);
+      try {
+        const res = await api.fetchLimits({
+          id: upload.id, sheet, header_row: headerRow, edits: editsPayload, x_col: xCol,
+          limits, min_length: limitsMinLen,
+        });
+        if (reqId === limitsReq.current) setLimitsData(res);
+      } catch (e) {
+        if (reqId === limitsReq.current) setError(String(e.message || e));
+      } finally {
+        if (reqId === limitsReq.current) setLimitsBusy(false);
+      }
+    }, 300);
+    return () => clearTimeout(limitsTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, upload, sheet, headerRow, xCol, JSON.stringify(limits), limitsMinLen, editsKey]);
+
   // -------- Clamp per-series axis numbers when axisCount is lowered --------
   useEffect(() => {
     setStyles((prev) => {
@@ -650,7 +702,35 @@ export default function App() {
     prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx]);
   const toggleNormalize = (name) => setNormalize((prev) =>
     prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]);
-  const restoreEdits = () => { setDropColumns([]); setDropRows([]); setRenames({}); setDeletions([]); };
+  const onLimit = (col, patch) => setLimits((prev) => {
+    const cur = { ...(prev[col] || {}), ...patch };
+    if ((cur.min ?? "") === "" && (cur.max ?? "") === "") {
+      const next = { ...prev }; delete next[col]; return next;
+    }
+    return { ...prev, [col]: cur };
+  });
+  const onDropTime = (range) => setDropTime((prev) => [...prev, range]);
+  // Period inspector: open the padding dialog, then fetch the context window.
+  const onShowPeriod = (b) => { if (b) { setShowPeriod(b); setShowDlg(true); } };
+  const applyShow = async () => {
+    if (!showPeriod || !upload) return;
+    setShowDlg(false); setInspectOn(true); setCtxData(null);
+    const reqId = ++ctxReq.current;
+    setCtxBusy(true); setError(null);
+    try {
+      const res = await api.fetchContext({
+        id: upload.id, sheet, header_row: headerRow, edits: editsPayload, x_col: xCol,
+        param: showPeriod.parameter, start_idx: showPeriod.start_idx, end_idx: showPeriod.end_idx,
+        left: pad.left, right: pad.right,
+      });
+      if (reqId === ctxReq.current) setCtxData(res);
+    } catch (e) {
+      if (reqId === ctxReq.current) setError(String(e.message || e));
+    } finally {
+      if (reqId === ctxReq.current) setCtxBusy(false);
+    }
+  };
+  const restoreEdits = () => { setDropColumns([]); setDropRows([]); setRenames({}); setDeletions([]); setDropTime([]); };
 
   // Rename a column: key the rename by ORIGINAL name (backend applies it),
   // then migrate all frontend state keyed by the current name.
@@ -666,6 +746,10 @@ export default function App() {
     setOrder((prev) => prev.map((c) => (c === current ? name : c)));
     setDropColumns((prev) => prev.map((c) => (c === current ? name : c)));
     setNormalize((prev) => prev.map((c) => (c === current ? name : c)));
+    setLimits((prev) => {
+      if (!prev[current]) return prev;
+      const n = { ...prev }; n[name] = n[current]; delete n[current]; return n;
+    });
     setXCol((prev) => (prev === current ? name : prev));
     if (windDir === current) setWindDir(name);
     if (windMag === current) setWindMag(name);
@@ -776,9 +860,11 @@ export default function App() {
       styles, order, axis_count: axisCount,
       resample, anomaly, anomaly_style: anomalyStyle, rolling, flags, annotations,
       view_mode: viewMode, dist_type: distType, corr_method: corrMethod,
-      drop_columns: dropColumns, drop_rows: dropRows, renames,
+      drop_columns: dropColumns, drop_rows: dropRows, drop_time: dropTime, renames,
       deletions, interpolate: interp, normalize, normalize_mode: normalizeMode,
       sort_x: sortX, time_window: timeWindow,
+      axis_labels: axisLabels, date_fmt: dateFmt,
+      limits, limits_min_len: limitsMinLen,
     };
     downloadBlob(new Blob([JSON.stringify(preset, null, 2)], { type: "application/json" }),
       "chronoscope-preset.json");
@@ -808,6 +894,7 @@ export default function App() {
       if (p.corr_method) setCorrMethod(p.corr_method);
       if (Array.isArray(p.drop_columns)) setDropColumns(p.drop_columns);
       if (Array.isArray(p.drop_rows)) setDropRows(p.drop_rows);
+      if (Array.isArray(p.drop_time)) setDropTime(p.drop_time);
       if (p.renames && typeof p.renames === "object") setRenames(p.renames);
       if (Array.isArray(p.deletions)) setDeletions(p.deletions);
       if (Array.isArray(p.normalize)) setNormalize(p.normalize);
@@ -815,6 +902,12 @@ export default function App() {
       if (p.interpolate && typeof p.interpolate === "object") setInterp(p.interpolate);
       if (typeof p.sort_x === "boolean") setSortX(p.sort_x);
       if (p.time_window && typeof p.time_window === "object") setTimeWindow(p.time_window);
+      if (p.axis_labels && typeof p.axis_labels === "object")
+        setAxisLabels({ x: p.axis_labels.x || "", y: p.axis_labels.y || {} });
+      if (p.date_fmt && typeof p.date_fmt === "object")
+        setDateFmt({ order: p.date_fmt.order || "dmy", sep: p.date_fmt.sep || "/" });
+      if (p.limits && typeof p.limits === "object") setLimits(p.limits);
+      if (typeof p.limits_min_len === "number") setLimitsMinLen(p.limits_min_len);
       if (Array.isArray(p.annotations)) setAnnotations(p.annotations);
       setError(null);
     } catch (e) { setError(t("Ошибка пресета: {msg}", { msg: String(e.message || e) })); }
@@ -994,12 +1087,19 @@ export default function App() {
                   win={timeWindow} onChange={setTimeWindow}
                   hasTime={!!seriesData.x_is_time} info={seriesData.window}
                 />
+                <AxisLabelBar
+                  xDefault={seriesData.x_col || ""} yAxes={tsYAxes}
+                  labels={axisLabels} onApply={setAxisLabels}
+                  hasTime={!!seriesData.x_is_time}
+                  dateFmt={dateFmt} onDateFmt={setDateFmt}
+                />
                 <div className="card" style={{ marginBottom: 16 }}>
                   <Chart
                     key={`ts-${refreshKey}-${axisSig}`}
                     data={seriesData} styles={styles} flags={flags}
                     anomalyStyle={anomalyStyle} rolling={rolling}
                     annotations={annotations} onAddAnnotation={addAnnotation}
+                    axisLabels={axisLabels} dateFmt={dateFmt}
                     onGraphDiv={registerChart(t("Временной ряд"))}
                   />
                 </div>
@@ -1126,7 +1226,7 @@ export default function App() {
                   </div>
                   {missingBusy && <span className="spinner" />}
                 </div>
-                <MissingMapView key={`miss-${refreshKey}`} missing={missingData}
+                <MissingMapView key={`miss-${refreshKey}`} missing={missingData} dateFmt={dateFmt}
                   onGraphDiv={registerChart(t("Карта пропусков"))} />
               </>
             )}
@@ -1142,6 +1242,29 @@ export default function App() {
                 deletionsCount={deletions.length}
                 onExportCleaned={onExportCleaned} busyExport={busyExport}
               />
+            )}
+
+            {viewMode === "limits" && (
+              <>
+                <LimitsView
+                  data={limitsData} busy={limitsBusy}
+                  columns={orderedCols.filter((c) => c !== xCol)}
+                  limits={limits} onLimit={onLimit}
+                  minLen={limitsMinLen} onMinLen={setLimitsMinLen}
+                  onShow={onShowPeriod}
+                  isDeleted={isDeleted} onToggleDeletion={toggleDeletion} onBatchDelete={addDeletions}
+                  deletionsCount={deletions.length}
+                  onExportCleaned={onExportCleaned} busyExport={busyExport}
+                />
+                {inspectOn && (
+                  <PeriodInspector
+                    data={ctxData} busy={ctxBusy}
+                    param={showPeriod?.parameter} styles={styles} dateFmt={dateFmt}
+                    onDropTime={onDropTime}
+                    onClose={() => { setInspectOn(false); setCtxData(null); }}
+                  />
+                )}
+              </>
             )}
 
             {viewMode === "outliers" && (
@@ -1191,6 +1314,11 @@ export default function App() {
         charts={exportCharts}
         onClose={() => setExportOpen(false)}
         onExport={onExportCharts}
+      />
+
+      <PeriodShowDialog
+        open={showDlg} period={showPeriod} pad={pad} onPad={setPad}
+        onApply={applyShow} onClose={() => setShowDlg(false)}
       />
     </div>
   );

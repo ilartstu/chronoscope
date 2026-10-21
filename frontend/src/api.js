@@ -31,6 +31,8 @@ export const inspect = (b) => post("/inspect", b);
 export const fetchSeries = (b) => post("/series", b);
 export const fetchCorrelation = (b) => post("/correlation", b);
 export const fetchBlocks = (b) => post("/blocks", b);
+export const fetchLimits = (b) => post("/limits", b);
+export const fetchContext = (b) => post("/context", b);
 export const fetchSpectrum = (b) => post("/spectrum", b);
 export const fetchMissing = (b) => post("/missing", b);
 export const fetchRows = (b) => post("/rows", b);

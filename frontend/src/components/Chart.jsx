@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import createPlotlyComponent from "react-plotly.js/factory";
 import Plotly from "plotly.js-dist-min";
 import { useT } from "../i18n";
+import { niceDateTicks, toNaiveISO, formatDate } from "../lib/dateTicks";
 
 const Plot = createPlotlyComponent(Plotly);
 
@@ -72,7 +73,7 @@ function rollingMeanStd(y, w) {
 
 // Build up to N overlaying Y axes, positioned left/right by axis-number parity,
 // with the plot's x-domain shrunk to make room for the extra axes.
-function buildAxes(usedAxes, namesByAxis, colorByAxis) {
+function buildAxes(usedAxes, namesByAxis, colorByAxis, yLabels) {
   const step = 0.07;
   const left = usedAxes.filter((n) => n % 2 === 1);
   const right = usedAxes.filter((n) => n % 2 === 0);
@@ -91,11 +92,13 @@ function buildAxes(usedAxes, namesByAxis, colorByAxis) {
       : Math.min(1, +(R + step * rank).toFixed(4));
     const names = namesByAxis[n] || [];
     const col = names.length === 1 ? colorByAxis[names[0]] : "#6b7686";
+    const over = yLabels && yLabels[n];
+    const titleText = (over && over.trim()) ? over : names.join(", ");
     const cfg = {
       side, anchor: "free", position: pos,
       gridcolor: i === 0 ? "#eef1f6" : "transparent",
       zeroline: i === 0, zerolinecolor: "#d7dce6",
-      title: { text: names.join(", "), font: { size: 11, color: col } },
+      title: { text: titleText, font: { size: 11, color: col } },
       tickfont: { color: col },
     };
     if (i > 0) cfg.overlaying = "y";
@@ -136,8 +139,11 @@ function alignedZeroRanges(usedAxes, namesByAxis, statsByName) {
   return ranges;
 }
 
-export default function Chart({ data, styles, flags, anomalyStyle, rolling, annotations, onAddAnnotation, onGraphDiv }) {
+export default function Chart({ data, styles, flags, anomalyStyle, rolling, annotations, onAddAnnotation, onGraphDiv, axisLabels, dateFmt, highlightBands, dragMode, onRangeSelect, dimRange }) {
   const t = useT();
+  const labels = axisLabels || { x: "", y: {} };
+  const fmt = dateFmt || { order: "dmy", sep: "/" };
+  const bands = highlightBands || [];
   const { traces, layout } = useMemo(() => {
     const sharedX = data.x;
     const big = data.n > GL_THRESHOLD;
@@ -157,7 +163,7 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
     const usedAxes = [...new Set(data.series.map((s) => axisNum(styles[s.name]?.axis || 1)))]
       .sort((a, b) => a - b);
     const { refFor, layoutAxes, xDomain, leftCount, rightCount } =
-      buildAxes(usedAxes, namesByAxis, colorByAxis);
+      buildAxes(usedAxes, namesByAxis, colorByAxis, labels.y);
 
     // Align y=0 across axes (fixes the "misaligned zero" look on multi-axis plots).
     if (flags.alignZero && usedAxes.length > 1) {
@@ -238,6 +244,18 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
       }
     }
 
+    // Explicit highlight bands (e.g. the flagged period being inspected).
+    for (const hb of bands) {
+      if (hb && hb.x0 != null && hb.x1 != null) shapes.push(band(hb.x0, hb.x1, hb.color || "#e0564d", 0.16));
+    }
+    // A selected range: highlight it and dim everything outside (above layer).
+    if (dimRange && dimRange.x0 != null && dimRange.x1 != null && sharedX && sharedX.length) {
+      const xmin = sharedX[0], xmax = sharedX[sharedX.length - 1];
+      shapes.push(band(xmin, dimRange.x0, "#0f1826", 0.18, "above"));
+      shapes.push(band(dimRange.x1, xmax, "#0f1826", 0.18, "above"));
+      shapes.push(band(dimRange.x0, dimRange.x1, "#3b6ef5", 0.13, "below"));
+    }
+
     const truncatedShapes = shapes.length > MAX_SHAPES;
     const finalShapes = truncatedShapes ? shapes.slice(0, MAX_SHAPES) : shapes;
 
@@ -249,19 +267,42 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
       borderwidth: 1, borderpad: 3, font: { color: "#5b3bbf", size: 11 },
     })) : [];
 
+    const xTitle = (labels.x && labels.x.trim()) ? labels.x : (data.x_col || "");
+    const xAxis = {
+      type: data.x_is_time ? "date" : "linear",
+      domain: xDomain,
+      title: { text: xTitle, font: { size: 11 } },
+      gridcolor: "#eef1f6", zeroline: false, rangeslider: { visible: false },
+    };
+
+    // Custom full-date ticks on the time axis: endpoints + month/year starts,
+    // formatted numerically (no "Dec 10"), in the chosen order & separator.
+    if (data.x_is_time) {
+      let mn = Infinity, mx = -Infinity;
+      for (const v of sharedX) {
+        if (v == null) continue;
+        const ms = Date.parse(v);
+        if (isFinite(ms)) { if (ms < mn) mn = ms; if (ms > mx) mx = ms; }
+      }
+      if (isFinite(mn) && isFinite(mx)) {
+        const ticks = niceDateTicks(mn, mx);
+        xAxis.tickmode = "array";
+        xAxis.tickvals = ticks.map((ms) => toNaiveISO(ms));
+        xAxis.ticktext = ticks.map((ms) => formatDate(ms, fmt.order, fmt.sep));
+        xAxis.ticks = "outside";
+        xAxis.tickangle = ticks.length > 6 ? -35 : 0;
+        xAxis.automargin = true;
+      }
+    }
+
     const layout = {
       margin: { l: leftCount > 0 ? 58 : 40, r: rightCount > 0 ? 58 : 18, t: 10, b: 44 },
       height: 560,
       hovermode: "x unified",
-      dragmode: "zoom",
+      dragmode: dragMode || "zoom",
       showlegend: true,
       legend: { orientation: "h", y: -0.18, font: { size: 11 }, traceorder: "reversed" },
-      xaxis: {
-        type: data.x_is_time ? "date" : "linear",
-        domain: xDomain,
-        title: { text: data.x_col || "", font: { size: 11 } },
-        gridcolor: "#eef1f6", zeroline: false, rangeslider: { visible: false },
-      },
+      xaxis: xAxis,
       ...layoutAxes,
       shapes: finalShapes,
       annotations: layoutAnnotations,
@@ -271,7 +312,8 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
     };
     layout._truncatedShapes = truncatedShapes;
     return { traces, layout };
-  }, [data, styles, flags, anomalyStyle, rolling, annotations, t]);
+  }, [data, styles, flags, anomalyStyle, rolling, annotations, t,
+      JSON.stringify(labels), JSON.stringify(fmt), JSON.stringify(bands), dragMode, JSON.stringify(dimRange)]);
 
   return (
     <div>
@@ -283,7 +325,9 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
       <Plot
         data={traces}
         layout={layout}
-        style={{ width: "100%" }}
+        // Explicit height reserves the space in flow so the sections below never
+        // jump up under the chart during a window-resize reflow.
+        style={{ width: "100%", height: (layout.height || 560) + "px" }}
         useResizeHandler
         onInitialized={(_fig, gd) => onGraphDiv?.(gd)}
         onUpdate={(_fig, gd) => onGraphDiv?.(gd)}
@@ -294,22 +338,31 @@ export default function Chart({ data, styles, flags, anomalyStyle, rolling, anno
           if (text === null) return;
           onAddAnnotation({ x: p.x, y: p.y, text, axis: p.data.yaxis || "y", col: p.data.name });
         }}
+        onSelecting={onRangeSelect ? (e) => {
+          const rx = e?.range?.x;
+          if (rx && rx.length === 2) onRangeSelect({ x0: rx[0], x1: rx[1] });
+        } : undefined}
+        onSelected={onRangeSelect ? (e) => {
+          const rx = e?.range?.x;
+          if (rx && rx.length === 2) onRangeSelect({ x0: rx[0], x1: rx[1] });
+        } : undefined}
+        onDeselect={onRangeSelect ? () => onRangeSelect(null) : undefined}
         config={{
           responsive: true,
           displaylogo: false,
           scrollZoom: true,
           toImageButtonOptions: { format: "png", filename: "figure", scale: 2 },
-          modeBarButtonsToRemove: ["lasso2d", "select2d"],
+          modeBarButtonsToRemove: dragMode === "select" ? ["lasso2d"] : ["lasso2d", "select2d"],
         }}
       />
     </div>
   );
 }
 
-function band(x0, x1, color, alpha) {
+function band(x0, x1, color, alpha, layer = "below") {
   return {
     type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0, y1: 1,
-    fillcolor: hexToRgba(color, alpha), line: { width: 0 }, layer: "below",
+    fillcolor: hexToRgba(color, alpha), line: { width: 0 }, layer,
   };
 }
 

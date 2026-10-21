@@ -1261,6 +1261,7 @@ export default function App() {
                     data={ctxData} busy={ctxBusy}
                     param={showPeriod?.parameter} styles={styles} dateFmt={dateFmt}
                     onDropTime={onDropTime}
+                    onGraphDiv={registerChart(t("Физические ограничения") + (showPeriod?.parameter ? ` · ${showPeriod.parameter}` : ""))}
                     onClose={() => { setInspectOn(false); setCtxData(null); }}
                   />
                 )}

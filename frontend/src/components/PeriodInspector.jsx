@@ -12,7 +12,7 @@ function short(iso) {
 // becomes a range-select (no zoom clash); the selected range is highlighted and
 // the rest dimmed, with editable boundary dates that snap to the nearest real
 // timestamp. Confirming deletes those rows entirely (by time, all parameters).
-export default function PeriodInspector({ data, busy, param, styles, dateFmt, onDropTime, onClose }) {
+export default function PeriodInspector({ data, busy, param, styles, dateFmt, onDropTime, onClose, onGraphDiv }) {
   const t = useT();
   const [delMode, setDelMode] = useState(false);
   const [sel, setSel] = useState(null);       // { start, end, startExact, endExact }
@@ -124,6 +124,7 @@ export default function PeriodInspector({ data, busy, param, styles, dateFmt, on
             dragMode={delMode ? "select" : "zoom"}
             onRangeSelect={delMode ? onSelectRange : undefined}
             dimRange={sel ? { x0: sel.start, x1: sel.end } : null}
+            onGraphDiv={onGraphDiv}
           />
         ) : <div className="small muted" style={{ padding: 20 }}><span className="spinner" /></div>}
       </div>

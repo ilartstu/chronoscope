@@ -179,8 +179,7 @@ Contributions are welcome! Open an issue to discuss a bug or idea, or send a pul
 request. If Chronoscope is useful to you, a ⭐ really helps others find it.
 
 ## License
-
-Released under the license in the [LICENSE](LICENSE) file.
+Licensed under PolyForm Noncommercial 1.0.0 [LICENSE](LICENSE). Commercial use requires separate permission.
 
 ---
 
